@@ -10,29 +10,24 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from google import genai
 
-try:
-    from config import BOT_TOKEN as LOCAL_BOT_TOKEN, GEMINI_API_KEY as LOCAL_GEMINI_API_KEY
-except Exception:
-    LOCAL_BOT_TOKEN = None
-    LOCAL_GEMINI_API_KEY = None
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") or LOCAL_BOT_TOKEN
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or LOCAL_GEMINI_API_KEY
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN topilmadi. config.py yoki Railway Variables ga qo‘ying.")
+    raise ValueError("BOT_TOKEN topilmadi. Railway Variables ga qo'ying.")
 
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY topilmadi. config.py yoki Railway Variables ga qo‘ying.")
+    raise ValueError("GEMINI_API_KEY topilmadi. Railway Variables ga qo'ying.")
 
-logging.basicConfig(level=logging.INFO)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 DB_NAME = "studymaster.db"
-
 user_modes = {}
 current_quizzes = {}
 
@@ -126,11 +121,18 @@ def get_analysis(telegram_id: int):
 
 
 def ask_gemini(prompt: str) -> str:
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    return response.text if response.text else "Javob topilmadi."
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        text = getattr(response, "text", None)
+        return text.strip() if text and text.strip() else "Javob topilmadi."
+    except Exception as e:
+        error_text = str(e)
+        if "API key was reported as leaked" in error_text:
+            raise ValueError("GEMINI_API_KEY bloklangan. Yangi API key oling va Railway Variables ga qo'ying.")
+        raise ValueError(f"Gemini bilan ulanishda xatolik: {error_text}")
 
 
 def generate_topic_explanation(topic: str) -> str:
@@ -141,13 +143,11 @@ Javobni o‘zbek tilida, sodda, tushunarli va tartibli yoz.
 Mavzu: {topic}
 
 Javob tuzilmasi:
-1. Ta’rif
+1. Ta'rif
 2. Asosiy tushuncha
 3. Muhim nuqtalar
 4. Oddiy misol
 5. Xulosa
-
-Juda uzun qilma, lekin foydali bo‘lsin.
 """
     return ask_gemini(prompt)
 
@@ -155,7 +155,7 @@ Juda uzun qilma, lekin foydali bo‘lsin.
 def generate_qa_answer(question: str) -> str:
     prompt = f"""
 Sen talabalar uchun savol-javob yordamchisisan.
-Javobni o‘zbek tilida, sodda va tushunarli yoz.
+Javobni o'zbek tilida, sodda va tushunarli yoz.
 
 Savol: {question}
 """
@@ -169,7 +169,7 @@ Talabalar uchun:
 - 1 ta kreativ savol
 - 1 ta qisqa motivatsion gap
 
-Javobni faqat o‘zbek tilida va chiroyli formatda yoz.
+Javobni faqat o'zbek tilida yoz.
 """
     return ask_gemini(prompt)
 
@@ -179,8 +179,7 @@ def generate_quiz(topic: str):
 Sen quiz tuzuvchi yordamchisan.
 Mavzu: {topic}
 
-Aniq JSON qaytar.
-Hech qanday qo‘shimcha matn yozma.
+Faqat JSON qaytar.
 
 Format:
 {{
@@ -200,16 +199,44 @@ Format:
 }}
 
 Talablar:
-- aynan 15 ta savol bo‘lsin
-- har savolda A, B, C, D variant bo‘lsin
-- correct_answer faqat A, B, C yoki D bo‘lsin
-- savollar talaba uchun tushunarli bo‘lsin
-- javob faqat JSON bo‘lsin
+- 15 ta savol
+- har savolda A, B, C, D variant
+- correct_answer faqat A, B, C yoki D
 """
-    raw = ask_gemini(prompt)
-    raw = raw.strip().replace("```json", "").replace("```", "").strip()
-    data = json.loads(raw)
-    return data
+
+    raw = ask_gemini(prompt).replace("```json", "").replace("```", "").strip()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError("Quiz JSON formatida xatolik bor.")
+
+    if "topic" not in data or "questions" not in data:
+        raise ValueError("Quiz ma'lumotlari to'liq emas.")
+
+    questions = []
+    for q in data["questions"]:
+        if (
+            isinstance(q, dict)
+            and "question" in q
+            and "options" in q
+            and isinstance(q["options"], dict)
+            and all(k in q["options"] for k in ["A", "B", "C", "D"])
+            and str(q.get("correct_answer", "")).upper() in ["A", "B", "C", "D"]
+        ):
+            questions.append({
+                "question": q["question"],
+                "options": q["options"],
+                "correct_answer": str(q["correct_answer"]).upper()
+            })
+
+    if not questions:
+        raise ValueError("Yaroqli test savollari topilmadi.")
+
+    return {
+        "topic": data["topic"],
+        "questions": questions[:15]
+    }
 
 
 async def send_quiz_question(message: Message, user_id: int):
@@ -225,14 +252,13 @@ async def send_quiz_question(message: Message, user_id: int):
         f"B) {q['options']['B']}\n"
         f"C) {q['options']['C']}\n"
         f"D) {q['options']['D']}\n\n"
-        "Javobni faqat bitta harf bilan yuboring: A, B, C yoki D"
+        "Javobni faqat A, B, C yoki D ko'rinishida yuboring."
     )
     await message.answer(text)
 
 
 @dp.message(CommandStart())
 async def start_handler(message: Message):
-    init_db()
     add_user(
         telegram_id=message.from_user.id,
         full_name=message.from_user.full_name,
@@ -245,12 +271,12 @@ async def start_handler(message: Message):
         f"Salom, {message.from_user.full_name}!\n\n"
         "StudyMaster Bot ga xush kelibsiz 🎓\n\n"
         "Bu bot orqali siz:\n"
-        "• mavzu bo‘yicha ma’lumot olasiz\n"
+        "• mavzu bo'yicha ma'lumot olasiz\n"
         "• video dars linkini topasiz\n"
         "• savol-javob qilasiz\n"
         "• quiz/test ishlaysiz\n"
-        "• natijalaringizni ko‘rasiz\n"
-        "• o‘zlashtirishingizni tahlil qilasiz\n"
+        "• natijalaringizni ko'rasiz\n"
+        "• o'zlashtirishingizni tahlil qilasiz\n"
         "• kun savoli va faktlarini olasiz"
     )
 
@@ -260,13 +286,13 @@ async def start_handler(message: Message):
 @dp.message(F.text == "📚 Mavzu izlash")
 async def topic_button_handler(message: Message):
     user_modes[message.from_user.id] = "topic"
-    await message.answer("Qaysi mavzu bo‘yicha ma’lumot kerak? Mavzuni yozing.")
+    await message.answer("Qaysi mavzu bo'yicha ma'lumot kerak? Mavzuni yozing.")
 
 
 @dp.message(F.text == "🎥 Video darslar")
 async def video_button_handler(message: Message):
     user_modes[message.from_user.id] = "video"
-    await message.answer("Qaysi mavzu bo‘yicha video dars kerak? Mavzuni yozing.")
+    await message.answer("Qaysi mavzu bo'yicha video dars kerak? Mavzuni yozing.")
 
 
 @dp.message(F.text == "❓ Savol-javob")
@@ -278,7 +304,7 @@ async def qa_button_handler(message: Message):
 @dp.message(F.text == "📝 Quiz/Test")
 async def quiz_button_handler(message: Message):
     user_modes[message.from_user.id] = "quiz"
-    await message.answer("Qaysi mavzu bo‘yicha test ishlamoqchisiz? Mavzuni yozing.")
+    await message.answer("Qaysi mavzu bo'yicha test ishlamoqchisiz? Mavzuni yozing.")
 
 
 @dp.message(F.text == "📊 Natijalarim")
@@ -290,11 +316,10 @@ async def results_button_handler(message: Message):
         return
 
     text = "📊 Sizning oxirgi natijalaringiz:\n\n"
-    for row in rows[:5]:
-        topic, total, correct, score, created_at = row
+    for topic, total, correct, score, created_at in rows[:5]:
         text += (
             f"📘 Mavzu: {topic}\n"
-            f"✅ To‘g‘ri javob: {correct}/{total}\n"
+            f"✅ To'g'ri javob: {correct}/{total}\n"
             f"📈 Natija: {score:.1f}%\n"
             f"🕒 Sana: {created_at}\n\n"
         )
@@ -316,10 +341,7 @@ async def analysis_button_handler(message: Message):
     for topic, score in rows:
         topic_scores.setdefault(topic, []).append(score)
 
-    avg_topic_scores = {
-        topic: sum(scores) / len(scores) for topic, scores in topic_scores.items()
-    }
-
+    avg_topic_scores = {topic: sum(scores) / len(scores) for topic, scores in topic_scores.items()}
     strongest_topic = max(avg_topic_scores, key=avg_topic_scores.get)
     weakest_topic = min(avg_topic_scores, key=avg_topic_scores.get)
 
@@ -328,17 +350,17 @@ async def analysis_button_handler(message: Message):
     elif avg >= 70:
         level = "Yaxshi"
     elif avg >= 50:
-        level = "O‘rtacha"
+        level = "O'rtacha"
     else:
-        level = "Qo‘shimcha ishlash kerak"
+        level = "Qo'shimcha ishlash kerak"
 
     text = (
-        f"🧠 O‘zlashtirish tahlili:\n\n"
-        f"📊 Umumiy o‘rtacha: {avg:.1f}%\n"
+        f"🧠 O'zlashtirish tahlili:\n\n"
+        f"📊 Umumiy o'rtacha: {avg:.1f}%\n"
         f"🏷 Daraja: {level}\n"
         f"💪 Eng yaxshi mavzu: {strongest_topic}\n"
         f"📉 Kuchsizroq mavzu: {weakest_topic}\n\n"
-        f"Tavsiya: {weakest_topic} bo‘yicha ko‘proq mashq qiling."
+        f"Tavsiya: {weakest_topic} bo'yicha ko'proq mashq qiling."
     )
 
     await message.answer(text)
@@ -348,8 +370,7 @@ async def analysis_button_handler(message: Message):
 async def daily_button_handler(message: Message):
     await message.answer("⏳ Kun savoli va faktlari tayyorlanmoqda...")
     try:
-        text = generate_daily_fact_and_question()
-        await message.answer(text)
+        await message.answer(generate_daily_fact_and_question())
     except Exception as e:
         await message.answer(f"❌ Xatolik yuz berdi:\n{e}")
 
@@ -357,21 +378,24 @@ async def daily_button_handler(message: Message):
 @dp.message()
 async def main_text_handler(message: Message):
     user_id = message.from_user.id
-    text = message.text.strip()
+    text = (message.text or "").strip()
     mode = user_modes.get(user_id)
+
+    if not text:
+        await message.answer("Iltimos, matn yuboring.")
+        return
 
     if user_id in current_quizzes:
         answer = text.upper()
+
         if answer not in ["A", "B", "C", "D"]:
-            await message.answer("Javobni faqat A, B, C yoki D ko‘rinishida yuboring.")
+            await message.answer("Javobni faqat A, B, C yoki D ko'rinishida yuboring.")
             return
 
         quiz = current_quizzes[user_id]
-        idx = quiz["current_index"]
-        q = quiz["questions"][idx]
-        correct = q["correct_answer"].upper()
+        q = quiz["questions"][quiz["current_index"]]
 
-        if answer == correct:
+        if answer == q["correct_answer"]:
             quiz["correct_count"] += 1
 
         quiz["current_index"] += 1
@@ -388,7 +412,7 @@ async def main_text_handler(message: Message):
             await message.answer(
                 f"✅ Test yakunlandi!\n\n"
                 f"📘 Mavzu: {quiz['topic']}\n"
-                f"✅ To‘g‘ri javoblar: {correct_answers}/{total}\n"
+                f"✅ To'g'ri javoblar: {correct_answers}/{total}\n"
                 f"📈 Natija: {score:.1f}%"
             )
 
@@ -397,64 +421,48 @@ async def main_text_handler(message: Message):
         return
 
     if mode == "topic":
-        await message.answer("⏳ Mavzu bo‘yicha ma’lumot tayyorlanmoqda...")
+        await message.answer("⏳ Mavzu bo'yicha ma'lumot tayyorlanmoqda...")
         try:
-            answer = generate_topic_explanation(text)
-            await message.answer(answer)
+            await message.answer(generate_topic_explanation(text))
         except Exception as e:
             await message.answer(f"❌ Xatolik yuz berdi:\n{e}")
-        finally:
-            user_modes[user_id] = None
+        user_modes[user_id] = None
         return
 
     if mode == "video":
         search_query = quote_plus(f"{text} dars")
         youtube_url = f"https://www.youtube.com/results?search_query={search_query}"
-
-        await message.answer(
-            f"🎥 {text} bo‘yicha video darslar uchun YouTube qidiruv linki:\n\n{youtube_url}"
-        )
+        await message.answer(f"🎥 {text} bo'yicha video darslar:\n\n{youtube_url}")
         user_modes[user_id] = None
         return
 
     if mode == "qa":
         await message.answer("⏳ Javob tayyorlanmoqda...")
         try:
-            answer = generate_qa_answer(text)
-            await message.answer(answer)
+            await message.answer(generate_qa_answer(text))
         except Exception as e:
             await message.answer(f"❌ Xatolik yuz berdi:\n{e}")
-        finally:
-            user_modes[user_id] = None
+        user_modes[user_id] = None
         return
 
     if mode == "quiz":
         await message.answer("⏳ Test savollari tayyorlanmoqda...")
         try:
             quiz_data = generate_quiz(text)
-
             current_quizzes[user_id] = {
                 "topic": quiz_data["topic"],
                 "questions": quiz_data["questions"],
                 "current_index": 0,
                 "correct_count": 0
             }
-
             await send_quiz_question(message, user_id)
-
         except Exception as e:
-            await message.answer(
-                "❌ Test yaratishda xatolik yuz berdi.\n"
-                "Yana urinib ko‘ring.\n\n"
-                f"Xatolik: {e}"
-            )
-        finally:
-            user_modes[user_id] = None
+            await message.answer(f"❌ Test yaratishda xatolik yuz berdi:\n{e}")
+        user_modes[user_id] = None
         return
 
     await message.answer(
-        "Kerakli bo‘limni menyudan tanlang.\n\n"
-        "Masalan:\n"
+        "Kerakli bo'limni menyudan tanlang.\n\n"
         "📚 Mavzu izlash\n"
         "🎥 Video darslar\n"
         "❓ Savol-javob\n"
@@ -464,9 +472,9 @@ async def main_text_handler(message: Message):
 
 async def main():
     init_db()
+    logging.info("Bot ishga tushdi...")
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    print("Bot ishga tushdi...")
     asyncio.run(main())
