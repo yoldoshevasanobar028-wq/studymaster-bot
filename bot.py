@@ -1,13 +1,4 @@
 import os
-
-try:
-    from config import BOT_TOKEN as LOCAL_BOT_TOKEN, GEMINI_API_KEY as LOCAL_GEMINI_API_KEY
-except:
-    LOCAL_BOT_TOKEN = None
-    LOCAL_GEMINI_API_KEY = None
-
-BOT_TOKEN = os.getenv("BOT_TOKEN") or LOCAL_BOT_TOKEN
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or LOCAL_GEMINI_API_KEY
 import asyncio
 import json
 import logging
@@ -19,7 +10,6 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from google import genai
 
-# Local config fallback
 try:
     from config import BOT_TOKEN as LOCAL_BOT_TOKEN, GEMINI_API_KEY as LOCAL_GEMINI_API_KEY
 except Exception:
@@ -43,7 +33,6 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 DB_NAME = "studymaster.db"
 
-# foydalanuvchi holati
 user_modes = {}
 current_quizzes = {}
 
@@ -371,7 +360,6 @@ async def main_text_handler(message: Message):
     text = message.text.strip()
     mode = user_modes.get(user_id)
 
-    # test ichida bo‘lsa
     if user_id in current_quizzes:
         answer = text.upper()
         if answer not in ["A", "B", "C", "D"]:
@@ -408,7 +396,6 @@ async def main_text_handler(message: Message):
             user_modes[user_id] = None
         return
 
-    # mavzu izlash
     if mode == "topic":
         await message.answer("⏳ Mavzu bo‘yicha ma’lumot tayyorlanmoqda...")
         try:
@@ -420,7 +407,6 @@ async def main_text_handler(message: Message):
             user_modes[user_id] = None
         return
 
-    # video darslar
     if mode == "video":
         search_query = quote_plus(f"{text} dars")
         youtube_url = f"https://www.youtube.com/results?search_query={search_query}"
@@ -431,7 +417,6 @@ async def main_text_handler(message: Message):
         user_modes[user_id] = None
         return
 
-    # savol-javob
     if mode == "qa":
         await message.answer("⏳ Javob tayyorlanmoqda...")
         try:
@@ -443,7 +428,6 @@ async def main_text_handler(message: Message):
             user_modes[user_id] = None
         return
 
-    # quiz
     if mode == "quiz":
         await message.answer("⏳ Test savollari tayyorlanmoqda...")
         try:
@@ -485,4 +469,4 @@ async def main():
 
 if __name__ == "__main__":
     print("Bot ishga tushdi...")
-    app.run_polling()
+    asyncio.run(main())
