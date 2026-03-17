@@ -1,4 +1,13 @@
 import os
+
+try:
+    from config import BOT_TOKEN as LOCAL_BOT_TOKEN, GEMINI_API_KEY as LOCAL_GEMINI_API_KEY
+except:
+    LOCAL_BOT_TOKEN = None
+    LOCAL_GEMINI_API_KEY = None
+
+BOT_TOKEN = os.getenv("BOT_TOKEN") or LOCAL_BOT_TOKEN
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or LOCAL_GEMINI_API_KEY
 import asyncio
 import json
 import logging
@@ -475,4 +484,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    print("Bot ishga tushdi...")
+    app.run_polling()
